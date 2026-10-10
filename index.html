@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Nettoyeur de Commandes - Universel (FR/EN)</title>
+    <title>Nettoyeur de Commandes - Universel (FR/EN) - V9 avec Dates</title>
 
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 
@@ -57,6 +57,7 @@
 
     <div class="instructions">
         <p>Compatible avec <strong>tous</strong> les exports Weezevent (Français ou Anglais) et <strong>toutes</strong> les ventes (chocolats, gels douche, tartes, saucissons, porte-clés...). Aucune liste de produits en dur : le script détecte automatiquement la colonne qui contient les produits.</p>
+        <p>La <strong>date de commande</strong> est détectée automatiquement et ajoutée au tableau final : pour chaque client, c'est la date de sa commande la plus récente qui est conservée, affichée au format européen <strong>JJ/MM/AAAA</strong> (en cas de fusion de doublons, la plus récente des deux est gardée).</p>
         <p><strong>1.</strong> Sélectionnez l'export brut. <strong>2.</strong> Traitez les doublons potentiels. <strong>3.</strong> Vérifiez le résultat en direct. <strong>4.</strong> Exportez en CSV ou Excel !</p>
     </div>
 
@@ -94,6 +95,7 @@
         let globalGroups = [];
         let globalConflicts = [];
         let globalProducts = [];
+        let globalHasDateCol = false;
         let finalDataAOA = [];
 
         function normalizeStr(str) {
@@ -161,7 +163,8 @@
             { key: 'email', specific: ['email', 'courriel'], generic: ['mail'] },
             { key: 'mobile', specific: ['mobile', 'telephone', 'phone', 'gsm'], generic: [] },
             { key: 'nomAcheteur', specific: ['lastname', 'surname', 'nomparticipant', 'nomacheteur', 'attendeesname'], generic: ['nom'] },
-            { key: 'prenomAcheteur', specific: ['firstname', 'prenomparticipant', 'prenomacheteur'], generic: ['prenom'] }
+            { key: 'prenomAcheteur', specific: ['firstname', 'prenomparticipant', 'prenomacheteur'], generic: ['prenom'] },
+            { key: 'orderDate', specific: [['order', 'date'], ['transaction', 'date'], ['commande', 'date'], ['achat', 'date'], ['date', 'commande'], ['date', 'achat']], generic: [] }
         ];
 
         const PRODUCT_FIELDS = [
@@ -214,6 +217,31 @@
             }
 
             return { colMap, productCols, claimed };
+        }
+
+        function parseDateKey(v) {
+            v = (v || '').trim();
+            if (!v) return null;
+            let m = v.match(/^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})/);
+            if (m) return (+m[1]) * 10000 + (+m[2]) * 100 + (+m[3]);
+            m = v.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/);
+            if (m) {
+                let a = +m[1], b = +m[2], y = +m[3];
+                let day = a, month = b;
+                if (month > 12) { day = b; month = a; }
+                if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+                return y * 10000 + month * 100 + day;
+            }
+            const d = new Date(v);
+            if (isNaN(d.getTime())) return null;
+            return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+        }
+
+        function formatDateFR(key) {
+            if (!key) return "";
+            const y = Math.floor(key / 10000), mo = Math.floor(key / 100) % 100, d = key % 100;
+            const pad = n => String(n).padStart(2, '0');
+            return pad(d) + "/" + pad(mo) + "/" + y;
         }
 
         function looksLikeProduct(v) {
@@ -279,11 +307,16 @@
                 const mobile = colMap.mobile != null ? (row[colMap.mobile] || '').trim() : "";
                 const classe = colMap.classe != null ? (row[colMap.classe] || '').trim() : "";
 
+                const dateRaw = colMap.orderDate != null ? (row[colMap.orderDate] || '').trim() : "";
+                const dateKey = parseDateKey(dateRaw);
+
                 const strictKey = normalizeStr(`${email}|${nom}|${prenom}|${enfant}`);
 
                 if (!rawGroups[strictKey]) {
                     rawGroups[strictKey] = {
                         _id: strictKey,
+                        latestDateKey: 0,
+                        latestDateRaw: "",
                         identite: {
                             "Nom participant": nom,
                             "Prénom participant": prenom,
@@ -295,6 +328,10 @@
                         },
                         produits: {}
                     };
+                }
+                if (dateKey && dateKey > rawGroups[strictKey].latestDateKey) {
+                    rawGroups[strictKey].latestDateKey = dateKey;
+                    rawGroups[strictKey].latestDateRaw = formatDateFR(dateKey);
                 }
                 if (!rawGroups[strictKey].produits[prodKey]) rawGroups[strictKey].produits[prodKey] = 0;
                 rawGroups[strictKey].produits[prodKey] += 1;
@@ -315,7 +352,7 @@
                     const sim = getSimilarity(parent1, parent2);
                     const sameChild = normalizeStr(g1["Prénom de votre enfant"]) === normalizeStr(g2["Prénom de votre enfant"]);
                     if ((sim > 0.85 && sim < 1.0) || (sim === 1.0 && !sameChild)) {
-                        conflicts.push({ id1: i, id2: j, g1: g1, g2: g2 });
+                        conflicts.push({ id1: i, id2: j, g1: g1, g2: g2, d1: groups[i].latestDateRaw, d2: groups[j].latestDateRaw });
                     }
                 }
             }
@@ -325,6 +362,7 @@
                 conflicts,
                 products: globalProducts,
                 skippedRows,
+                hasDateCol: colMap.orderDate != null,
                 productColName: headers[productCols[0]].trim()
             };
         }
@@ -353,6 +391,7 @@
                     const result = analyzeData(parsed.headers, parsed.rows);
                     globalGroups = result.groups;
                     globalConflicts = result.conflicts;
+                    globalHasDateCol = result.hasDateCol;
 
                     const summary = `${parsed.rows.length} lignes analysées — ${globalGroups.length} clients, ${globalProducts.length} produits (colonne : ${result.productColName})${result.skippedRows ? ` — ${result.skippedRows} lignes sans produit ignorées` : ""}`;
 
@@ -375,12 +414,12 @@
                                     <div class="profile-box">
                                         <b>${escapeHtml(c.g1["Nom participant"] + " " + c.g1["Prénom participant"])}</b><br>
                                         <span>📧</span> ${escapeHtml(c.g1["E-mail Acheteur"] || 'N/A')}<br>
-                                        <span>👶</span> ${escapeHtml(c.g1["Prénom de votre enfant"] || 'Aucun enfant')} (Classe: ${escapeHtml(c.g1["Quelle classe fréquente votre enfant?"] || 'N/A')})
+                                        <span>👶</span> ${escapeHtml(c.g1["Prénom de votre enfant"] || 'Aucun enfant')} (Classe: ${escapeHtml(c.g1["Quelle classe fréquente votre enfant?"] || 'N/A')})${globalHasDateCol ? `<br><span>📅</span> Dernière commande : ${escapeHtml(c.d1 || 'N/A')}` : ''}
                                     </div>
                                     <div class="profile-box">
                                         <b>${escapeHtml(c.g2["Nom participant"] + " " + c.g2["Prénom participant"])}</b><br>
                                         <span>📧</span> ${escapeHtml(c.g2["E-mail Acheteur"] || 'N/A')}<br>
-                                        <span>👶</span> ${escapeHtml(c.g2["Prénom de votre enfant"] || 'Aucun enfant')} (Classe: ${escapeHtml(c.g2["Quelle classe fréquente votre enfant?"] || 'N/A')})
+                                        <span>👶</span> ${escapeHtml(c.g2["Prénom de votre enfant"] || 'Aucun enfant')} (Classe: ${escapeHtml(c.g2["Quelle classe fréquente votre enfant?"] || 'N/A')})${globalHasDateCol ? `<br><span>📅</span> Dernière commande : ${escapeHtml(c.d2 || 'N/A')}` : ''}
                                     </div>
                                 </div>
                             </div>`;
@@ -467,6 +506,10 @@
                     if ((group.identite["Mobile Acheteur"] || "").length > (main.identite["Mobile Acheteur"] || "").length) {
                         main.identite["Mobile Acheteur"] = group.identite["Mobile Acheteur"];
                     }
+                    if (group.latestDateKey > main.latestDateKey) {
+                        main.latestDateKey = group.latestDateKey;
+                        main.latestDateRaw = group.latestDateRaw;
+                    }
                     for (let p in group.produits) {
                         if (!main.produits[p]) main.produits[p] = 0;
                         main.produits[p] += group.produits[p];
@@ -482,12 +525,13 @@
             ];
             let listeProduits = globalProducts;
 
-            let headers = [...colonnesIdentite, ...listeProduits];
+            let headers = [...colonnesIdentite, ...(globalHasDateCol ? ["Date de commande"] : []), ...listeProduits];
             finalDataAOA.push(headers);
 
             Object.values(finalGroups).forEach(client => {
                 let row = [];
                 colonnesIdentite.forEach(col => row.push(client.identite[col] || ""));
+                if (globalHasDateCol) row.push(client.latestDateRaw || "");
                 listeProduits.forEach(prod => row.push(client.produits[normalizeStr(prod)] || 0));
                 finalDataAOA.push(row);
             });
