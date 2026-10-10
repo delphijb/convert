@@ -3,6 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Force le navigateur à retélécharger la page à chaque visite -->
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+
+    <script>
+        // Anti-cache automatique : ajoute une clé aléatoire à l'URL pour forcer
+        // un téléchargement tout neuf. Garde-fous pour ne jamais boucler :
+        // - si la clé est déjà présente dans l'URL => on ne recharge plus ;
+        // - si le navigateur ignore la clé (ex: file:// sous Chrome) => on ne recharge
+        //   qu'une seule fois par onglet grâce à sessionStorage.
+        (function () {
+            if (/[?&]cb=/.test(location.search)) return;
+            var busted = false;
+            try { busted = sessionStorage.getItem('cb_done') === '1'; } catch (e) {}
+            if (busted) return;
+            try { sessionStorage.setItem('cb_done', '1'); } catch (e) {}
+            location.replace(location.href.split('#')[0].split('?')[0] + '?cb=' + Date.now());
+        })();
+    </script>
+
     <title>Nettoyeur de Commandes - Universel (FR/EN) - V9 avec Dates</title>
 
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
